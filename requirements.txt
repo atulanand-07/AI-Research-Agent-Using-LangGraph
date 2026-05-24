@@ -26,3 +26,7 @@ scikit-learn>=1.8.0
 
 # UI
 streamlit>=1.57.0
+
+
+requests
+pypdf2
