@@ -18,6 +18,7 @@ import {
   searchArticles,
   selectArticle
 } from './api';
+import Markdown from './Markdown';
 
 const fallbackSuggestions = [
   'Why Multi-head Attention?',
@@ -305,6 +306,7 @@ function ChatPanel({ messages, onSendMessage, isLoading }) {
 
 function ChatBubble({ message, onChipClick }) {
   const isAssistant = message.role === 'assistant';
+  const isUser = message.role === 'user';
 
   const sourcesText =
     isAssistant && message.grounded_in && message.grounded_in.length > 0
@@ -316,7 +318,17 @@ function ChatBubble({ message, onChipClick }) {
   return (
     <article className={`chat-row ${isAssistant ? 'assistant' : 'user'}`}>
       <div className="chat-bubble">
-        <p>{message.text}</p>
+        {/*
+          * User messages are short, single-line inputs — keep them inside a plain
+          * <p> so the surrounding bubble styling (whitespace-normal) wraps them
+          * naturally. Assistant messages may be long, multi-paragraph, and
+          * formatted Markdown, so route them through the Markdown renderer.
+          */}
+        {isUser ? (
+          <p className="chat-text">{message.text}</p>
+        ) : (
+          <Markdown>{message.text}</Markdown>
+        )}
         {isAssistant && (sourcesText || modeText) && (
           <div
             style={{

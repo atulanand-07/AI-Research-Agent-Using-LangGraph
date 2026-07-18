@@ -48,7 +48,9 @@ No linter, formatter, or type checker is configured. There is no `conftest.py`, 
   - On mount: `getSession()` rehydrates `sources`, `selectedArticle`, `article_results`, `chat_history`.
   - **Polling**: while any source/article has `status === 'pending' | 'processing'`, the app re-calls `getSession()` every 1.5 s. There is no SSE / websocket.
   - Toggling does NOT clear history; switching modes mid-conversation keeps history and only changes what gets retrieved for the next turn.
-- `src/styles.css` — Hand-written dark theme, 16 px radius, 25/50/25 grid workspace, fully responsive (tablet → 2-col, mobile → stacked). Tokens: bg `#1B1C1F`, card `#24262B`, border `#34373D`, accent `#4A90E2`, text `#FFFFFF`, secondary `#AEB4BE`, hover `#2D3037`.
+  - **Chat rendering**: user bubbles render plain text in a `<p class="chat-text">`; assistant bubbles are routed through `src/Markdown.jsx` (see below). Don't put the user side through the Markdown renderer — short single-line inputs collapse awkwardly in it.
+- `src/Markdown.jsx` — Wraps `react-markdown` with `remark-gfm` (tables, task lists, strikethrough, autolinks) and `rehype-highlight` (fenced code blocks, styled by `highlight.js/styles/github-dark.css`). Output is wrapped in `<div class="markdown-body">`, whose spacing rules live in `styles.css`. The component is intentionally dumb (no batching/debouncing) so streaming token updates re-render incrementally. `skipHtml` is `false` but `<script>` is excluded via a defensive comment — the backend only feeds model output, but be careful about pasting untrusted HTML here.
+- `src/styles.css` — Hand-written dark theme, 16 px radius, 25/50/25 grid workspace, fully responsive (tablet → 2-col, mobile → stacked). Tokens: bg `#1B1C1F`, card `#24262B`, border `#34373D`, accent `#4A90E2`, text `#FFFFFF`, secondary `#AEB4BE`, hover `#2D3037`. Includes the `.markdown-body` ruleset that resets margins on every direct child so list/code-block/table spacing inside a chat bubble doesn't double up with the bubble's own padding.
 
 ### Backend — `backend/`
 
@@ -66,8 +68,8 @@ No linter, formatter, or type checker is configured. There is no `conftest.py`, 
   - `general_chat_node` uses `_build_general_prompt` (history + question only); it must **not** include "answer only from context" instructions. The shared `_build_prompt` is for grounded modes only.
   - `hybrid_context_node` queries both stores independently and concatenates into `merged_context` — do not blend the two retrieval calls.
   - `response_generator_node` always appends an assistant `ChatTurn` to `chat_history` with `mode` and `grounded_in` populated; the UI's "Answer generated using …" line reads from this.
-  - `followup_generator_node` ensures 3–5 questions, toping up from a fixed fallback list. `_clean_followups` strips the canned "could not reach Gemini" string so it never appears as a chip.
-  - `_make_llm` returns `ChatGoogleGenerativeAI` if `GOOGLE_API_KEY` is set, else a deterministic `_FallbackLLM` stub. `_invoke_llm` swallows exceptions and substitutes a fixed "could not reach Gemini" message.
+  - `followup_generator_node` ensures 3–5 questions, toping up from a fixed fallback list. `_clean_followups` strips the canned "could not reach the configured model" string so it never appears as a chip.
+  - `_make_llm` returns a `ChatHuggingFace` (via `langchain_huggingface.HuggingFaceEndpoint`) if `HF_TOKEN` is set, else a deterministic `_FallbackLLM` stub. `_invoke_llm` swallows exceptions and substitutes a fixed "could not reach the configured model" message; it also coerces non-string LLM responses (Hugging Face returns objects whose `.content` can be a list of dicts) to a string before returning.
 - `ingestion/` — `pdf_loader.py` (pypdf), `wikipedia_loader.py` (REST `/api/rest_v1/page/summary/`), `chunker.py` (1200-char windows, 150-char overlap), `source_processor.py` (background tasks that transition `pending → processing → ready` or `error`).
 - `retrieval/` — `vector_store.py` (the in-memory hashed-BOW store; comment says FAISS can replace internals later), `sources_retriever.py` (scoped to passed `vector_ref`s), `article_retriever.py` (scoped to the article's `vector_ref`). Chunk dicts carry `text`, `source_name`, `score`, `vector_ref`, `chunk_id`; `source_name` populates `active_sources_used` and must match the UI filename/title exactly.
 - `search/` — `arxiv_client.py` (Atom XML), `semantic_scholar_client.py`, `wikipedia_search_client.py`. All three return the same 8-key dict schema: `{id, title, authors, abstract, publication_year, source, pdf_link, citation_count}`. `article_ranker.py` fans out the three in a `ThreadPoolExecutor(3)`, dedupes by normalized title (keeps highest-ranked), sorts by `(year, citation_count)`, returns top 10. Per-provider errors are silently swallowed.
@@ -95,9 +97,12 @@ The supervisor silently downgrades any mode whose data is missing back to `gener
 
 ## Environment / configuration
 
-- `.env` (gitignored) carries `GOOGLE_API_KEY`. The backend uses it via `langchain-google-genai` (`gemini-2.5-flash-lite` by default, overridable with `GOOGLE_MODEL`, `GOOGLE_REQUEST_TIMEOUT`, `GOOGLE_RETRIES`).
-- No `GOOGLE_API_KEY` → `_FallbackLLM` returns a fixed stub answer, so the app still runs end-to-end.
-- **Quota**: the free-tier Gemini key frequently hits `RESOURCE_EXHAUSTED` (`backend.log` is full of 429s). Production-ish retry / backoff / model fallback is not implemented — `_invoke_llm` swallows the error and returns a canned message that is then filtered out of follow-up chips.
+- `.env.example` (untracked, the template) and `.env` (gitignored, the live one) carry the LLM config. Current provider: **Hugging Face Inference API** via `langchain-huggingface` (`ChatHuggingFace` wrapping `HuggingFaceEndpoint`). Vars:
+  - `HF_TOKEN` — required for real answers; without it `_make_llm` returns the stub and the app still runs end-to-end.
+  - `HF_MODEL` — default `deepseek-ai/DeepSeek-R1`. The reasoning-style model returns objects whose `content` is a list of `{type, text}` dicts — `_invoke_llm` flattens these to a string.
+  - `HF_TEMPERATURE` (default `0.7`), `HF_MAX_NEW_TOKENS` (default `512`), `HF_STREAMING` (default `false`).
+  - The previous Google-specific vars (`GOOGLE_API_KEY`, `GOOGLE_MODEL`, `GOOGLE_REQUEST_TIMEOUT`, `GOOGLE_RETRIES`) are no longer read; the `langchain-google-genai` import path was swapped for `langchain_huggingface`.
+- **Quota / reliability**: HF Inference API can rate-limit or return model-load errors. `_invoke_llm` swallows all exceptions and substitutes a fixed "could not reach the configured model" message; that string is also filtered out of follow-up chips by `_clean_followups`. There is no built-in retry / backoff / model fallback — if HF flakes, the user sees the canned message and a `_FallbackLLM` answer only when `HF_TOKEN` is unset.
 - Vite picks the first free port starting at 5173. Observed fallback: 5174. `main.py` redirects `/` to `http://127.0.0.1:5174` hard-coded.
 
 ## Conventions and gotchas

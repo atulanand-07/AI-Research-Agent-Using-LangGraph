@@ -21,22 +21,26 @@ class _LocalResponse:
 class _FallbackLLM:
     def invoke(self, prompt: str) -> _LocalResponse:
         return _LocalResponse(
-            "I can help with that. Configure GOOGLE_API_KEY to enable Gemini-backed answers."
+            "I can help with that. Configure HF_TOKEN to enable Hugging Face-backed answers."
         )
 
 
 def _make_llm():
-    if not os.getenv("GOOGLE_API_KEY"):
+    if not os.getenv("HF_TOKEN"):
         return _FallbackLLM()
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
     except ImportError:
         return _FallbackLLM()
-    return ChatGoogleGenerativeAI(
-        model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash-lite"),
-        request_timeout=float(os.getenv("GOOGLE_REQUEST_TIMEOUT", "12")),
-        retries=int(os.getenv("GOOGLE_RETRIES", "1")),
+    endpoint = HuggingFaceEndpoint(
+        repo_id=os.getenv("HF_MODEL", "deepseek-ai/DeepSeek-R1"),
+        task="text-generation",
+        huggingfacehub_api_token=os.getenv("HF_TOKEN"),
+        max_new_tokens=int(os.getenv("HF_MAX_NEW_TOKENS", "512")),
+        temperature=float(os.getenv("HF_TEMPERATURE", "0.7")),
+        streaming=os.getenv("HF_STREAMING", "false").lower() == "true",
     )
+    return ChatHuggingFace(llm=endpoint)
 
 
 llm = _make_llm()
@@ -44,11 +48,15 @@ llm = _make_llm()
 
 def _invoke_llm(prompt: str) -> _LocalResponse:
     try:
-        return llm.invoke(prompt)
+        response = llm.invoke(prompt)
+        content = getattr(response, "content", response)
+        if not isinstance(content, str):
+            content = str(content)
+        return _LocalResponse(content=content)
     except Exception as exc:
         print(f"LLM invocation failed: {exc}")
         return _LocalResponse(
-            "I could not reach the configured Gemini model quickly enough. "
+            "I could not reach the configured Hugging Face model quickly enough. "
             "Please try again, or check the backend model configuration."
         )
 
@@ -183,7 +191,7 @@ def _clean_followups(content: str) -> list[str]:
     questions: list[str] = []
     for line in content.splitlines():
         cleaned = line.strip().lstrip("-*0123456789. )").strip()
-        if cleaned.startswith("I could not reach the configured Gemini model"):
+        if cleaned.startswith("I could not reach the configured Hugging Face model"):
             continue
         if cleaned and cleaned not in questions:
             questions.append(cleaned)
@@ -208,9 +216,6 @@ Current question: {state['query']}
 
 Answer using the retrieved context when available. If context is provided but doesn't
 contain the answer, say so explicitly rather than guessing."""
-
-
-
 
 
 

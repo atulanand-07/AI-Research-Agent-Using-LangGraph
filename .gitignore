@@ -208,3 +208,4 @@ vite.log
 vite.err.log
 backend.log
 backend.err.log
+CODEBASE_ANALYSIS.md
